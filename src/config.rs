@@ -154,6 +154,11 @@ pub enum ConfigError {
     },
     #[error(transparent)]
     LandlockConfig(#[from] LandlockConfigError),
+    #[error("Some properties of {profile_name} config file are unknown: {properties:?}")]
+    UnknownProperties {
+        properties: Vec<String>,
+        profile_name: String,
+    },
 }
 
 // Handle empty profile files.  This is useful to validate a profile without context.
@@ -294,7 +299,18 @@ impl IslandConfig {
         F: Fn(&Path) -> io::Result<PathBuf>,
     {
         let mut profile = Profile::default();
-        let cfg = toml::from_str::<ProfileConfig>(content)?;
+        let ds = toml::Deserializer::new(content);
+        let mut unused_props = vec![];
+        let cfg: ProfileConfig = serde_ignored::deserialize(ds, |prop| {
+            unused_props.push(prop.to_string());
+        })?;
+
+        if unused_props.len() > 0 {
+            Err(ConfigError::UnknownProperties {
+                profile_name: profile_name.to_string(),
+                properties: unused_props,
+            })?;
+        }
 
         for cfg_context in cfg.contexts.unwrap_or_default() {
             // Canonicalize the when_beneath path to resolve symlinks and ignore

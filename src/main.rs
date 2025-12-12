@@ -22,6 +22,7 @@ use config::{
     ConfigError,
     IslandConfig,
     ResolvedProfile,
+    ISLAND_CUSTOM_CONFIG_NAME,
     ISLAND_CUSTOM_CONFIG_BASE_CONTENT
 };
 
