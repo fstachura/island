@@ -5,7 +5,7 @@ use clap_complete::generate;
 use landlock::RulesetError;
 use landlockconfig::{BuildRulesetError, ParseDirectoryError, ResolveError, ResolvedConfig};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     fmt::Display,
     fs, io,
@@ -16,7 +16,14 @@ use std::{
 use thiserror::Error;
 
 mod config;
-use config::{is_profile_name_valid, ConfigError, IslandConfig, ResolvedProfile};
+use config::{
+    is_profile_name_valid,
+    generate_path_beneath_rule,
+    ConfigError,
+    IslandConfig,
+    ResolvedProfile,
+    ISLAND_CUSTOM_CONFIG_BASE_CONTENT
+};
 
 mod context;
 
@@ -146,6 +153,26 @@ enum Commands {
                 These paths will be converted to absolute paths and stored in the profile configuration."
         )]
         when_beneath: Vec<String>,
+
+        #[arg(
+            short = 'r',
+            long,
+            help = "Allow read and execute from directory.",
+            long_help = "One or more directories the profile will be allowed to read from. \
+                These paths will be converted to absolute paths and stored in the profile configuration. \
+                Equivalent to \"abi.read_execute\" in allowed_access."
+        )]
+        allow_read_execute: Vec<String>,
+
+        #[arg(
+            short = 'w',
+            long,
+            help = "Allow read and write to directory.",
+            long_help = "One or more directories the profile will be allowed to read from and write to. \
+                These paths will be converted to absolute paths and stored in the profile configuration. \
+                Equivalent to \"abi.read_write\" in allowed_access."
+        )]
+        allow_read_write: Vec<String>,
     },
 
     #[command(
@@ -212,6 +239,9 @@ enum IslandError {
 
     #[error(transparent)]
     Ruleset(#[from] RulesetError),
+
+    #[error("duplicate paths between different permissions options")]
+    DuplicatedPaths(Vec<String>),
 }
 
 fn run(
@@ -386,6 +416,8 @@ fn main() -> Result<(), IslandError> {
         Commands::Create {
             name,
             when_beneath: paths,
+            allow_read_write,
+            allow_read_execute,
         } => {
             if !is_profile_name_valid(&name) {
                 return Err(IslandError::Io(io::Error::new(
@@ -425,6 +457,60 @@ fn main() -> Result<(), IslandError> {
                 landlock_dir.join("island-default-base.toml"),
                 config::ISLAND_DEFAULT_CONFIG_BASE_CONTENT,
             )?;
+
+            let allow_read_write: BTreeSet<_> = allow_read_write.iter().clone().collect();
+            let allow_read_execute: BTreeSet<_> = allow_read_execute.iter().clone().collect();
+
+            let rw_and_rx = allow_read_write.intersection(&allow_read_execute);
+            let rw_and_rx: Vec<String> = rw_and_rx.map(|v| (*v).clone()).collect();
+            if rw_and_rx.len() > 0 {
+                Err(IslandError::DuplicatedPaths(rw_and_rx))?
+            }
+
+            let read_write_config = generate_path_beneath_rule(
+                &["abi.read_write".into()],
+                &allow_read_write
+                    .iter()
+                    .map(|path| {
+                        let full_path = try_canonicalize(path)?;
+                        let path_value = full_path.to_string_lossy().into();
+                        full_paths.push(full_path);
+                        Ok(path_value)
+                    })
+                    .collect::<Result<Vec<String>, io::Error>>()?
+            );
+
+            let read_execute_config = generate_path_beneath_rule(
+                &["abi.read_execute".into()],
+                &allow_read_execute
+                    .iter()
+                    .map(|path| {
+                        let full_path = try_canonicalize(path)?;
+                        let path_value = full_path.to_string_lossy().into();
+                        full_paths.push(full_path);
+                        Ok(path_value)
+                    })
+                    .collect::<Result<Vec<String>, io::Error>>()?
+            );
+
+            let mut landlockconfig = String::from(ISLAND_CUSTOM_CONFIG_BASE_CONTENT);
+
+            if allow_read_execute.len() > 0 {
+                landlockconfig += "\n";
+                landlockconfig += &read_execute_config;
+            }
+
+            if allow_read_write.len() > 0 {
+                landlockconfig += "\n";
+                landlockconfig += &read_write_config;
+            }
+
+            if allow_read_write.len() > 0 || allow_read_execute.len() > 0 {
+                std::fs::write(
+                    landlock_dir.join(ISLAND_CUSTOM_CONFIG_NAME),
+                    landlockconfig,
+                )?;
+            }
 
             println!("Created profile \"{}\" in {}", name, profile_dir.display());
             println!("It applies to:");
