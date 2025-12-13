@@ -12,6 +12,7 @@ use std::{
     os::unix::process::CommandExt,
     path::{self, Path, PathBuf},
     process::Command,
+    os::unix::fs::PermissionsExt,
 };
 use thiserror::Error;
 
@@ -360,10 +361,56 @@ fn resolve_profiles<'a>(
         // Use automatic profile resolution based on context.
         let canonicalized_cwd = std::env::current_dir()?.canonicalize()?;
         Ok(island_config
-            .resolve_profiles_by_path(canonicalized_cwd, load_config)?
+            .resolve_profiles_by_path(canonicalized_cwd, load_config, false)?
             .into_iter()
             .collect())
     }
+}
+
+fn resolve_binary_profiles<'a>(
+    cmd: &String,
+    island_config: &'a IslandConfig,
+) -> Result<Vec<ResolvedProfile<'a>>, IslandError> {
+    let cannonicalized_cmd_dir = if cmd.contains("/") {
+        fs::canonicalize(PathBuf::from(cmd))
+            .iter()
+            .filter(|v| v.is_file())
+            .map(|v| v.parent())
+            .collect()
+    } else {
+        let path_var = std::env::var("PATH");
+        if path_var.is_err() {
+            return Ok(vec![])
+        }
+        let path_var = path_var.unwrap();
+        let candidate_path: Option<PathBuf> = path_var
+            .split(":")
+            .map(|v| PathBuf::from(v.to_string()).join(cmd.clone()))
+            .filter(|path| path.is_file())
+            // it seems that the shell does not actually care if file is executable.
+            // if you remove executable bit from an executable in PATH, zsh will claim
+            // "permission denied"
+            .next();
+
+        candidate_path
+    };
+
+    let cannonicalized_cmd_dir = if let Some(v) = cannonicalized_cmd_dir {
+        v
+    } else {
+        return Ok(Vec::new())
+    };
+
+    let load_config = |name: &str| -> Result<ResolvedConfig, ConfigError> {
+        island_config.load_landlock_config(name)
+    };
+
+    println!("{:?}", cannonicalized_cmd_dir);
+
+    Ok(island_config
+        .resolve_profiles_by_path(cannonicalized_cmd_dir, load_config, true)?
+        .into_iter()
+        .collect())
 }
 
 fn main() -> Result<(), IslandError> {
@@ -377,7 +424,11 @@ fn main() -> Result<(), IslandError> {
             ignore_missing_profile,
         } => {
             let island_config = IslandConfig::new(|s| std::env::var(s))?;
-            let resolved_profiles = resolve_profiles(&island_config, &profile, &verbose)?;
+            let mut resolved_profiles = resolve_profiles(&island_config, &profile, &verbose)?;
+
+            let binary_profiles = resolve_binary_profiles(&command[0], &island_config)?;
+
+            resolved_profiles.extend(binary_profiles);
 
             run(
                 resolved_profiles,

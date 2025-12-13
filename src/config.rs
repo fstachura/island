@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
-
 use crate::{
     context::{ContextEntry, ContextSet},
     lock::{ExclusiveLock, ProfileGuard, ProfileLock, SharedLock, SharedLockError},
@@ -168,6 +167,8 @@ struct ProfileConfig {
 #[derive(Debug, Deserialize)]
 struct TomlContextEntry {
     pub when_beneath: PathBuf,
+    #[serde(default)]
+    pub include_exe: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -301,6 +302,7 @@ impl IslandConfig {
             let context = match canonicalize_path(&cfg_context.when_beneath) {
                 Ok(p) => ContextEntry {
                     when_beneath: Some(p),
+                    include_exe: cfg_context.include_exe,
                 },
                 Err(e) => {
                     eprintln!(
@@ -335,6 +337,7 @@ impl IslandConfig {
         &self,
         canonicalized_path: P,
         load_config: F,
+        for_executable: bool,
     ) -> Result<BTreeSet<ResolvedProfile<'_>>, ConfigError>
     where
         P: AsRef<Path>,
@@ -356,7 +359,11 @@ impl IslandConfig {
                         matches!(
                             context.when_beneath.as_ref(),
                             Some(when_beneath) if canonicalized_path.starts_with(when_beneath)
-                        )
+                        ) && if for_executable{
+                                context.include_exe
+                            } else {
+                                true
+                            }
                     })
                     .map(|context| {
                         ResolvedProfile::new(profile_name, profile, &load_config, Some(context))
@@ -365,11 +372,11 @@ impl IslandConfig {
             .collect();
 
         let resolved = resolved?;
-        if resolved.is_empty() {
-            return Err(ConfigError::NoContextForDirectory {
-                cwd: canonicalized_path.display().to_string(),
-            });
-        }
+        // if resolved.is_empty() {
+        //     return Err(ConfigError::NoContextForDirectory {
+        //         cwd: canonicalized_path.display().to_string(),
+        //     });
+        // }
 
         Ok(resolved)
     }
