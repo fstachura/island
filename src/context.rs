@@ -7,6 +7,7 @@ use std::{collections::BTreeSet, path::PathBuf};
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ContextEntry {
     pub when_beneath: Option<PathBuf>,
+    pub include_exe: bool,
 }
 
 impl ContextEntry {
