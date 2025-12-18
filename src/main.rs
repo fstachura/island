@@ -12,9 +12,9 @@ use std::{
     os::unix::process::CommandExt,
     path::{self, Path, PathBuf},
     process::Command,
-    os::unix::fs::PermissionsExt,
 };
 use thiserror::Error;
+use which::which;
 
 mod config;
 use config::{
@@ -117,7 +117,16 @@ enum Commands {
             was executed in the current directory. Returns exit code 0 if profiles are found, \
             1 otherwise."
     )]
-    Status,
+    Status {
+        #[arg(
+            long,
+            help = "Show profiles that apply to executable",
+            long_help = "If set, status will also print profiles that apply to the executable, ie. \
+                        profile that applies to parent directory of the executable has include_exe option \
+                        set to true.",
+        )]
+        include_exe: Option<String>,
+    },
 
     #[command(
         about = "Print shell integration script",
@@ -244,6 +253,9 @@ enum IslandError {
 
     #[error("duplicate paths between different permissions options")]
     DuplicatedPaths(Vec<String>),
+
+    #[error(transparent)]
+    WhichError(#[from] which::Error)
 }
 
 fn run(
@@ -371,41 +383,22 @@ fn resolve_binary_profiles<'a>(
     cmd: &String,
     island_config: &'a IslandConfig,
 ) -> Result<Vec<ResolvedProfile<'a>>, IslandError> {
-    let cannonicalized_cmd_dir = if cmd.contains("/") {
-        fs::canonicalize(PathBuf::from(cmd))
-            .iter()
-            .filter(|v| v.is_file())
-            .map(|v| v.parent())
-            .collect()
+    let exe_path = if Path::new(cmd).is_absolute() {
+        PathBuf::from(cmd)
     } else {
-        let path_var = std::env::var("PATH");
-        if path_var.is_err() {
-            return Ok(vec![])
-        }
-        let path_var = path_var.unwrap();
-        let candidate_path: Option<PathBuf> = path_var
-            .split(":")
-            .map(|v| PathBuf::from(v.to_string()).join(cmd.clone()))
-            .filter(|path| path.is_file())
-            // it seems that the shell does not actually care if file is executable.
-            // if you remove executable bit from an executable in PATH, zsh will claim
-            // "permission denied"
-            .next();
-
-        candidate_path
+        which(cmd)?
     };
 
-    let cannonicalized_cmd_dir = if let Some(v) = cannonicalized_cmd_dir {
-        v
+    let cannonicalized_path = try_canonicalize(exe_path)?;
+    let cannonicalized_cmd_dir = if let Some(path) = cannonicalized_path.parent() {
+        path
     } else {
-        return Ok(Vec::new())
+        Path::new("/")
     };
 
     let load_config = |name: &str| -> Result<ResolvedConfig, ConfigError> {
         island_config.load_landlock_config(name)
     };
-
-    println!("{:?}", cannonicalized_cmd_dir);
 
     Ok(island_config
         .resolve_profiles_by_path(cannonicalized_cmd_dir, load_config, true)?
@@ -427,7 +420,6 @@ fn main() -> Result<(), IslandError> {
             let mut resolved_profiles = resolve_profiles(&island_config, &profile, &verbose)?;
 
             let binary_profiles = resolve_binary_profiles(&command[0], &island_config)?;
-
             resolved_profiles.extend(binary_profiles);
 
             run(
@@ -438,9 +430,16 @@ fn main() -> Result<(), IslandError> {
                 &verbose,
             )
         }
-        Commands::Status => {
+        Commands::Status {
+            include_exe
+        } => {
             let island_config = IslandConfig::new(|s| std::env::var(s))?;
-            let resolved_profiles = resolve_profiles(&island_config, &[], &verbose)?;
+            let mut resolved_profiles = resolve_profiles(&island_config, &[], &verbose)?;
+
+            if let Some(exe_path) = include_exe {
+                let binary_profiles = resolve_binary_profiles(&exe_path, &island_config)?;
+                resolved_profiles.extend(binary_profiles);
+            }
 
             if resolved_profiles.is_empty() {
                 Err(IslandError::Io(io::Error::new(

@@ -162,12 +162,6 @@ function _island_wrap_cmd() {
 function _island_accept_line() {
     emulate -L zsh
 
-    # Only run if Island is active.
-    if (( ${#_ISLAND_PROFILES} == 0 )); then
-        zle _island_orig_accept_line
-        return
-    fi
-
     typeset -g -a _ISLAND_WRAPPED_CMDS=()
     local word expecting=1 modified=0
     local -a new_buffer_words
@@ -183,12 +177,24 @@ function _island_accept_line() {
             # Handle paths (containing /) by modifying the buffer.
             if [[ "$word" == */* ]]; then
                 if [[ -x "${(Q)word}" ]] || whence -p "${(Q)word}" >/dev/null; then
+                    # Only run if Island is active
+                    # (CWD is in profile directory or parent directory of executable has include_exe = true)
+                    if (( ${#_ISLAND_PROFILES} == 0 )) && ! ( command island status --include-exe "$word" &>| /dev/null ); then
+                        zle _island_orig_accept_line
+                        return
+                    fi
+
                     new_buffer_words+=("island" "run" "--" "$word")
                     modified=1
                 else
                     new_buffer_words+=("$word")
                 fi
             else
+                if (( ${#_ISLAND_PROFILES} == 0 )) && ! ( command island status --include-exe "$word" &>| /dev/null ); then
+                    zle _island_orig_accept_line
+                    return
+                fi
+
                 _island_wrap_cmd "$word"
                 new_buffer_words+=("$word")
             fi
