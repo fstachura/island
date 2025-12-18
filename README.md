@@ -348,6 +348,8 @@ Current limitations:
 - Nested sandboxing: Currently limited by kernel's 16-level Landlock nesting. This will be addressed with synthetic Landlock ruleset chaining.
 - No environment filtering: No filtering of environment variables that might contain denied paths. We should parse and update common variables (e.g., `PATH`, `XDG_DATA_DIRS`, `OLDPWD`) according to the Landlock configuration.
 - Profile directory exposure: If Island's own XDG directories are accessible to sandboxed processes, configuration could be modified. We should warn about such configuration issues.
+* Commands inside sourced (`source ./script.sh`/`. ./script.sh`) files are not sandboxed, same may apply to commands executed by some shell built-ins (ex. `eval`).
+* Applications sandboxed with Island may not execute setuid executables. For example, you may need to unpack an AppImage application before running it under Island.
 
 ## TODO
 
